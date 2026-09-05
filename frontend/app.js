@@ -20,15 +20,37 @@ let STATE = {
 async function apiFetch(path, opts = {}) {
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
   if (STATE.token) headers["Authorization"] = `Bearer ${STATE.token}`;
-  const res = await fetch(API + path, { ...opts, headers });
+
+  let res;
+  try {
+    res = await fetch(API + path, { ...opts, headers });
+  } catch (err) {
+    throw new Error("Unable to reach backend server. Please verify the API is running at " + API);
+  }
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data.detail
-      ? typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)
-      : `HTTP ${res.status}`;
+    let msg = `HTTP ${res.status}`;
+    if (typeof data.detail === "string") {
+      msg = data.detail;
+    } else if (Array.isArray(data.detail)) {
+      msg = data.detail.map(d => d.msg || JSON.stringify(d)).join("; ");
+    } else if (data.detail && typeof data.detail === "object") {
+      msg = data.detail.message || JSON.stringify(data.detail);
+    }
     throw new Error(msg);
   }
   return data;
+}
+
+function getUserRole(u) {
+  if (!u) return "OFFICER";
+  if (typeof u.role === "string" && u.role) return u.role.toUpperCase();
+  if (Array.isArray(u.roles) && u.roles.length > 0) {
+    const r = u.roles[0];
+    return (typeof r === "object" ? r.role_name : r).toUpperCase();
+  }
+  return "OFFICER";
 }
 
 function showToast(msg, type = "") {
@@ -74,8 +96,8 @@ function statusBadge(status) {
   return `<span class="badge badge-${cls}"><span class="badge-dot"></span>${label}</span>`;
 }
 
-function roleBadge(role) {
-  const r = (role || "").toUpperCase();
+function roleBadge(userOrRole) {
+  const r = typeof userOrRole === "object" ? getUserRole(userOrRole) : (userOrRole || "").toUpperCase();
   return r === "ADMIN"
     ? `<span class="badge badge-admin">Admin</span>`
     : `<span class="badge badge-officer">Officer</span>`;
@@ -162,14 +184,25 @@ document.getElementById("setup-form").addEventListener("submit", async (e) => {
 document.getElementById("login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   hideError("login-error");
+
+  const emailInput = document.getElementById("login-email");
+  const passwordInput = document.getElementById("login-password");
+  const email = emailInput.value.trim();
+  const password = passwordInput.value;
+
+  if (!email || !password) {
+    showError("login-error", "Please enter both email and password.");
+    return;
+  }
+
   setLoading("login-btn", true);
+  emailInput.disabled = true;
+  passwordInput.disabled = true;
+
   try {
     const data = await apiFetch("/auth/login/json", {
       method: "POST",
-      body: JSON.stringify({
-        email:    document.getElementById("login-email").value.trim(),
-        password: document.getElementById("login-password").value,
-      }),
+      body: JSON.stringify({ email, password }),
     });
     STATE.token = data.access_token;
     localStorage.setItem("lmpc_token", data.access_token);
@@ -179,8 +212,14 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
     showError("login-error", err.message);
   } finally {
     setLoading("login-btn", false);
+    emailInput.disabled = false;
+    passwordInput.disabled = false;
   }
 });
+
+// Clear login error dynamically as the user types
+document.getElementById("login-email")?.addEventListener("input", () => hideError("login-error"));
+document.getElementById("login-password")?.addEventListener("input", () => hideError("login-error"));
 
 /* ── Enter App ─────────────────────────────────────────────── */
 function enterApp() {
@@ -188,14 +227,18 @@ function enterApp() {
   document.getElementById("app").style.display = "flex";
 
   const u = STATE.user;
+  const userRole = getUserRole(u);
+
   document.getElementById("user-name-display").textContent  = u.full_name || u.email;
-  document.getElementById("user-role-display").textContent  = u.role || "OFFICER";
+  document.getElementById("user-role-display").textContent  = userRole;
   document.getElementById("user-avatar-initials").textContent = moniker(u.full_name || u.email);
   document.getElementById("greeting-text").textContent = `${greeting()}, ${(u.full_name || "").split(" ")[0] || "Officer"}`;
 
-  // Show admin nav item
-  if ((u.role || "").toUpperCase() === "ADMIN") {
+  // Show admin nav item if role is ADMIN
+  if (userRole === "ADMIN") {
     document.querySelectorAll(".nav-item-admin").forEach(el => el.classList.remove("hidden"));
+  } else {
+    document.querySelectorAll(".nav-item-admin").forEach(el => el.classList.add("hidden"));
   }
 
   navigate("dashboard");
@@ -205,6 +248,8 @@ function logout() {
   STATE.token = null;
   STATE.user = null;
   localStorage.removeItem("lmpc_token");
+  // Cleanly hide admin nav items
+  document.querySelectorAll(".nav-item-admin").forEach(el => el.classList.add("hidden"));
   document.getElementById("app").style.display = "none";
   document.getElementById("auth-overlay").style.display = "flex";
   show("login-card");
@@ -343,7 +388,7 @@ async function openDetail(id) {
     document.getElementById("detail-sub").textContent   = i.product_category?.category_name || "";
 
     const isReviewable = ["SUBMITTED"].includes((i.status || "").toUpperCase());
-    const isAdmin      = (STATE.user?.role || "").toUpperCase() === "ADMIN";
+    const isAdmin      = getUserRole(STATE.user) === "ADMIN";
 
     document.getElementById("detail-body").innerHTML = `
       <div class="detail-grid">
@@ -510,7 +555,7 @@ async function loadUsers() {
             </div>
           </td>
           <td>${u.email}</td>
-          <td>${roleBadge(u.role)}</td>
+          <td>${roleBadge(u)}</td>
           <td>${activeBadge(u.is_active)}</td>
           <td>${fmtDate(u.created_at)}</td>
           <td>
@@ -548,11 +593,13 @@ function openNewUserModal() {
 
 async function createUser() {
   hideError("new-user-error");
+  const roleVal = document.getElementById("new-user-role").value;
   const body = {
     full_name: document.getElementById("new-user-name").value.trim(),
     email:     document.getElementById("new-user-email").value.trim(),
     password:  document.getElementById("new-user-password").value,
-    role:      document.getElementById("new-user-role").value,
+    role_name: roleVal,
+    role:      roleVal,
   };
   if (!body.full_name || !body.email || !body.password) {
     showError("new-user-error", "All fields are required."); return;

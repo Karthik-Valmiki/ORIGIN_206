@@ -13,7 +13,10 @@ def get_password_hash(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return pwd_context.verify(plain, hashed)
+    except Exception:
+        return False
 
 
 def create_access_token(subject: str, roles: list[str]) -> str:

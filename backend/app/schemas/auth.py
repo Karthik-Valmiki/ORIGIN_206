@@ -1,7 +1,8 @@
+from typing import Any
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, computed_field, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -29,6 +30,11 @@ class UserOut(BaseModel):
     roles: list[RoleOut]
     created_at: datetime
 
+    @computed_field
+    @property
+    def role(self) -> str:
+        return self.roles[0].role_name if self.roles else "OFFICER"
+
     model_config = {"from_attributes": True}
 
 
@@ -42,6 +48,15 @@ class UserCreate(BaseModel):
         description="Password must be between 8 and 72 characters (Bcrypt limit)",
     )
     role_name: str = Field(default="OFFICER")
+    role: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reconcile_role(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "role" in data and "role_name" not in data:
+                data["role_name"] = data["role"]
+        return data
 
 
 class LoginResponse(BaseModel):
