@@ -3,10 +3,12 @@ services:
     image: postgres:16-alpine
     container_name: lmpc-postgres
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: pass123
-      POSTGRES_DB: ORIGIN_DB
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pass123}
+      POSTGRES_DB: ${POSTGRES_DB:-ORIGIN_DB}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
@@ -14,7 +16,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d ORIGIN_DB"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-ORIGIN_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -25,11 +27,13 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:pass123@postgres:5432/ORIGIN_DB
-      SECRET_KEY: lmpc-sih-2026-super-secret-key-change-in-prod
-      ACCESS_TOKEN_EXPIRE_MINUTES: "60"
-      UPLOAD_DIR: /app/uploads
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:pass123@postgres:5432/ORIGIN_DB}
+      SECRET_KEY: ${SECRET_KEY:-lmpc-sih-2026-super-secret-key-change-in-prod}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
     volumes:
       - uploads_data:/app/uploads
       - ./backend/app:/app/app   # hot-reload: only app source, not site-packages

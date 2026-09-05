@@ -45,30 +45,48 @@ async def list_my_inspections(
     return result.scalars().all()
 
 
+def check_inspection_access(inspection: Inspection, current_user: User):
+    """Enforces object-level authorization: officers can only access their own inspections; admins can access any."""
+    user_roles = {r.role_name.upper().strip() for r in current_user.roles}
+    if "ADMIN" not in user_roles and inspection.officer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: you do not have permission to access this inspection.",
+        )
+
+
 @router.post("", response_model=InspectionOut, status_code=status.HTTP_201_CREATED)
 async def create_inspection(
     inspection_in: InspectionCreate,
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    # Verify product category exists to prevent unhandled ForeignKeyViolationError
+    category = await db.get(ProductCategory, inspection_in.product_category_id)
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Product category '{inspection_in.product_category_id}' not found.",
+        )
+
     # For prototype, assume a generic rule version is active
     result = await db.execute(
         select(RuleVersion).where(RuleVersion.is_active.is_(True)).limit(1)
     )
     rule_version = result.scalar_one_or_none()
-    
+
     if not rule_version:
-         raise HTTPException(status_code=400, detail="No active rule version found in the system.")
+        raise HTTPException(status_code=400, detail="No active rule version found in the system.")
 
     new_inspection = Inspection(
         officer_id=current_user.id,
         product_category_id=inspection_in.product_category_id,
         rule_version_id=rule_version.id,
-        status="PENDING"
+        status="PENDING",
     )
     db.add(new_inspection)
     await db.commit()
-    await db.refresh(new_inspection, ['product_category'])
+    await db.refresh(new_inspection, ["product_category"])
     return new_inspection
 
 
@@ -78,13 +96,23 @@ async def upload_image(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     # 1. Verify inspection exists
     result = await db.execute(select(Inspection).where(Inspection.id == inspection_id))
     inspection = result.scalar_one_or_none()
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
+
+    # Object-level authorization check
+    check_inspection_access(inspection, current_user)
+
+    # Workflow guard: reject uploads if inspection is already submitted/reviewed
+    if inspection.status != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot upload images: inspection status is already '{inspection.status}'.",
+        )
 
     # 2. Save file locally
     file_extension = Path(file.filename).suffix
@@ -100,7 +128,7 @@ async def upload_image(
         file_path=file_path,
         is_valid_file=True,
         preprocessing_status="UNPROCESSED",
-        ocr_status="PENDING"
+        ocr_status="PENDING",
     )
     db.add(new_image)
     await db.commit()
@@ -112,7 +140,7 @@ async def upload_image(
     return ImageUploadResponse(
         image_id=new_image.id,
         status="ACCEPTED",
-        message="Image uploaded and pipeline triggered."
+        message="Image uploaded and pipeline triggered.",
     )
 
 
@@ -120,7 +148,7 @@ async def upload_image(
 async def get_inspection(
     inspection_id: uuid.UUID,
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
         select(Inspection)
@@ -130,12 +158,15 @@ async def get_inspection(
             selectinload(Inspection.images),
             selectinload(Inspection.extracted_fields),
             selectinload(Inspection.findings),
-            selectinload(Inspection.reviews)
+            selectinload(Inspection.reviews),
         )
     )
     inspection = result.scalar_one_or_none()
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
+
+    # Object-level authorization check
+    check_inspection_access(inspection, current_user)
 
     return inspection
 
@@ -158,6 +189,10 @@ async def submit_inspection(
     inspection = result.scalar_one_or_none()
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found.")
+
+    # Object-level authorization check
+    check_inspection_access(inspection, current_user)
+
     if inspection.status != "PENDING":
         raise HTTPException(
             status_code=400,

@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(..., min_length=1)
 
 
 class TokenResponse(BaseModel):
@@ -33,13 +33,19 @@ class UserOut(BaseModel):
 
 
 class UserCreate(BaseModel):
-    full_name: str
-    email: str
-    password: str
-    role_name: str = "OFFICER"
+    full_name: str = Field(..., min_length=1, max_length=100, strip_whitespace=True)
+    email: EmailStr
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=72,
+        description="Password must be between 8 and 72 characters (Bcrypt limit)",
+    )
+    role_name: str = Field(default="OFFICER")
 
 
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+

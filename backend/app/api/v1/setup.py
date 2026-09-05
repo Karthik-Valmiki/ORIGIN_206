@@ -52,7 +52,6 @@ async def initialize_system(
             )
 
         # ── 3. Roles — upsert pattern (safe even if partial data exists) ──────
-        role_objs: dict[str, Role] = {}
         for role_name, desc in [
             ("ADMIN", "Full system access — manage users, override findings"),
             ("OFFICER", "Field inspection officer — create and submit inspections"),
@@ -62,15 +61,20 @@ async def initialize_system(
             if not role:
                 role = Role(role_name=role_name, description=desc)
                 db.add(role)
-            role_objs[role_name] = role
         await db.commit()
 
+        # Re-fetch ADMIN role instance after commit
+        admin_role = (
+            await db.execute(select(Role).where(Role.role_name == "ADMIN"))
+        ).scalar_one()
+
         # ── 4. Admin user ─────────────────────────────────────────────────────
+        admin_email = req.admin_email.lower().strip()
         admin = User(
-            full_name=req.admin_full_name,
-            email=req.admin_email,
+            full_name=req.admin_full_name.strip(),
+            email=admin_email,
             password_hash=get_password_hash(req.admin_password),
-            roles=[role_objs["ADMIN"]],
+            roles=[admin_role],
         )
         db.add(admin)
 
@@ -117,18 +121,18 @@ async def initialize_system(
             await db.commit()
 
     finally:
-        # ── 7. Always release the lock — use a fresh connection ───────────────
-        # We can't reuse `db` after a possible rollback, so open a new session.
-        from app.database import AsyncSessionLocal
-        async with AsyncSessionLocal() as unlock_db:
-            await unlock_db.execute(
+        # ── 7. Always release the advisory lock on the connection that acquired it ──
+        try:
+            await db.execute(
                 text("SELECT pg_advisory_unlock(:key)"), {"key": _SETUP_LOCK_KEY}
             )
-            await unlock_db.commit()
+            await db.commit()
+        except Exception:
+            pass
 
     return {
         "message": "System initialized successfully.",
-        "admin_email": req.admin_email,
-        "roles_created": list(role_objs.keys()),
+        "admin_email": admin_email,
+        "roles_created": ["ADMIN", "OFFICER"],
         "hint": "POST /api/v1/auth/login to get your JWT token.",
     }

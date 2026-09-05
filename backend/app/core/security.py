@@ -17,18 +17,18 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str, roles: list[str]) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
-        "sub": subject,          # user UUID as string
+        "sub": str(subject),
         "roles": roles,
+        "type": "access",
         "exp": expire,
-        "iat": datetime.now(timezone.utc),
+        "iat": now,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
-    """Raises JWTError if invalid/expired."""
+    """Decodes and validates JWT token; raises JWTError if invalid or expired."""
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])

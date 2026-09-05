@@ -31,31 +31,43 @@ async def get_current_user(
     )
     try:
         payload = decode_token(token)
-        user_id: str = payload.get("sub")
-        if not user_id:
+        user_id_raw = payload.get("sub")
+        if not user_id_raw:
             raise credentials_exc
-    except JWTError:
+        user_uuid = uuid.UUID(str(user_id_raw))
+    except (JWTError, ValueError, TypeError):
         raise credentials_exc
 
     result = await db.execute(
         select(User)
-        .where(User.id == uuid.UUID(user_id), User.is_active.is_(True))
+        .where(User.id == user_uuid)
         .options(selectinload(User.roles))
     )
     user = result.scalar_one_or_none()
     if not user:
         raise credentials_exc
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is deactivated. Contact an administrator.",
+        )
+
     return user
 
 
 def require_role(*allowed_roles: str):
     """FastAPI dependency factory — raises 403 if user doesn't have required role."""
+    normalized_allowed = {r.upper().strip() for r in allowed_roles}
+
     async def checker(current_user: User = Depends(get_current_user)) -> User:
-        user_roles = {r.role_name for r in current_user.roles}
-        if not user_roles.intersection(allowed_roles):
+        user_roles = {r.role_name.upper().strip() for r in current_user.roles}
+        if not user_roles.intersection(normalized_allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires one of roles: {list(allowed_roles)}",
+                detail=f"Requires one of roles: {sorted(list(normalized_allowed))}",
             )
         return current_user
+
     return checker
+
