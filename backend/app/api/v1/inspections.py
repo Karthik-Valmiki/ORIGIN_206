@@ -1,3 +1,15 @@
+"""
+Inspections API — Automated LMPC Verification Workflow.
+
+Workflow:
+  1. POST /inspections          → create inspection (status: PENDING)
+  2. POST /inspections/{id}/images → upload image(s); pipeline auto-starts
+     status transitions: PENDING → PROCESSING → COMPLIANT | NON_COMPLIANT
+  3. GET  /inspections/{id}     → poll for results (fields, findings, verdict)
+
+No manual submit or admin review step.
+"""
+
 import asyncio
 import os
 import shutil
@@ -11,30 +23,46 @@ from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_current_user, get_db, require_role
 from app.models.user import User
-from app.models.inspection import Inspection, Image, ProductCategory, RuleVersion, Review, AuditLog
+from app.models.inspection import Inspection, Image, ProductCategory, RuleVersion, AuditLog
 from app.schemas.inspection import (
     InspectionCreate,
     InspectionDetailOut,
     InspectionOut,
     ImageUploadResponse,
-    ReviewCreate,
-    ReviewOut,
 )
 from app.services.pipeline_svc import run_pipeline_for_image
 from app.config import settings
 
 router = APIRouter(prefix="/inspections", tags=["inspections"])
 
+# Statuses in which the pipeline is still running (no new uploads allowed)
+_LOCKED_STATUSES = {"PROCESSING", "COMPLIANT", "NON_COMPLIANT", "PROCESSING_FAILED"}
+
+
+def _check_access(inspection: Inspection, current_user: User):
+    """Officers can only access their own inspections; Admins see everything."""
+    user_roles = {r.role_name.upper() for r in current_user.roles}
+    if "ADMIN" not in user_roles and inspection.officer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: you do not have permission to access this inspection.",
+        )
+
+
+# ── List inspections ─────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[InspectionOut])
-async def list_my_inspections(
+async def list_inspections(
     status_filter: str | None = Query(None, alias="status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, le=100),
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Officers see only their own inspections; Admins see all."""
+    """
+    Officers see only their own inspections.
+    Admins see all inspections across all officers.
+    """
     q = select(Inspection).options(selectinload(Inspection.product_category))
     if "ADMIN" not in {r.role_name for r in current_user.roles}:
         q = q.where(Inspection.officer_id == current_user.id)
@@ -45,15 +73,7 @@ async def list_my_inspections(
     return result.scalars().all()
 
 
-def check_inspection_access(inspection: Inspection, current_user: User):
-    """Enforces object-level authorization: officers can only access their own inspections; admins can access any."""
-    user_roles = {r.role_name.upper().strip() for r in current_user.roles}
-    if "ADMIN" not in user_roles and inspection.officer_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access forbidden: you do not have permission to access this inspection.",
-        )
-
+# ── Create inspection ────────────────────────────────────────────────────────
 
 @router.post("", response_model=InspectionOut, status_code=status.HTTP_201_CREATED)
 async def create_inspection(
@@ -61,7 +81,7 @@ async def create_inspection(
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
     db: AsyncSession = Depends(get_db),
 ):
-    # Verify product category exists to prevent unhandled ForeignKeyViolationError
+    """Create a new inspection record (status: PENDING). Upload images next."""
     category = await db.get(ProductCategory, inspection_in.product_category_id)
     if not category:
         raise HTTPException(
@@ -69,12 +89,10 @@ async def create_inspection(
             detail=f"Product category '{inspection_in.product_category_id}' not found.",
         )
 
-    # For prototype, assume a generic rule version is active
     result = await db.execute(
         select(RuleVersion).where(RuleVersion.is_active.is_(True)).limit(1)
     )
     rule_version = result.scalar_one_or_none()
-
     if not rule_version:
         raise HTTPException(status_code=400, detail="No active rule version found in the system.")
 
@@ -90,6 +108,8 @@ async def create_inspection(
     return new_inspection
 
 
+# ── Upload image → triggers pipeline automatically ───────────────────────────
+
 @router.post("/{inspection_id}/images", response_model=ImageUploadResponse)
 async def upload_image(
     inspection_id: uuid.UUID,
@@ -98,31 +118,48 @@ async def upload_image(
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
     db: AsyncSession = Depends(get_db),
 ):
-    # 1. Verify inspection exists
-    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id))
+    """
+    Upload an image for an inspection.
+    The LMPC verification pipeline starts automatically in the background.
+    Once all images finish processing, the inspection is automatically
+    stamped COMPLIANT or NON_COMPLIANT — no manual step required.
+    """
+    result = await db.execute(
+        select(Inspection).where(Inspection.id == inspection_id)
+    )
     inspection = result.scalar_one_or_none()
     if not inspection:
-        raise HTTPException(status_code=404, detail="Inspection not found")
+        raise HTTPException(status_code=404, detail="Inspection not found.")
 
-    # Object-level authorization check
-    check_inspection_access(inspection, current_user)
+    _check_access(inspection, current_user)
 
-    # Workflow guard: reject uploads if inspection is already submitted/reviewed
-    if inspection.status != "PENDING":
+    # Only allow uploads while the inspection is still PENDING
+    if inspection.status in _LOCKED_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot upload images: inspection status is already '{inspection.status}'.",
+            detail=(
+                f"Cannot upload images: inspection status is '{inspection.status}'. "
+                "Pipeline has already run. Start a new inspection to re-verify."
+            ),
         )
 
-    # 2. Save file locally
-    file_extension = Path(file.filename).suffix
+    # Validate file type
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+    file_extension = Path(file.filename or "image.jpg").suffix.lower()
+    if file_extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{file_extension}'. Allowed: {', '.join(allowed_extensions)}",
+        )
+
+    # Save file
     new_filename = f"{uuid.uuid4()}{file_extension}"
     file_path = os.path.join(settings.UPLOAD_DIR, new_filename)
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    with open(file_path, "wb") as buf:
+        shutil.copyfileobj(file.file, buf)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    # 3. Create image record
+    # Create image record
     new_image = Image(
         inspection_id=inspection_id,
         file_path=file_path,
@@ -131,18 +168,31 @@ async def upload_image(
         ocr_status="PENDING",
     )
     db.add(new_image)
+
+    db.add(AuditLog(
+        user_id=current_user.id,
+        action="IMAGE_UPLOAD",
+        entity_name="inspections",
+        entity_id=inspection_id,
+        payload={"filename": file.filename, "saved_as": new_filename},
+    ))
     await db.commit()
     await db.refresh(new_image)
 
-    # 4. Trigger background pipeline (CV + OCR)
+    # Trigger background pipeline (CV → OCR → Field Extraction → Auto-Verdict)
     background_tasks.add_task(run_pipeline_for_image, new_image.id)
 
     return ImageUploadResponse(
         image_id=new_image.id,
         status="ACCEPTED",
-        message="Image uploaded and pipeline triggered.",
+        message=(
+            "Image accepted. The LMPC verification pipeline has started. "
+            "Poll GET /inspections/{id} until status changes to COMPLIANT or NON_COMPLIANT."
+        ),
     )
 
+
+# ── Get inspection detail ────────────────────────────────────────────────────
 
 @router.get("/{inspection_id}", response_model=InspectionDetailOut)
 async def get_inspection(
@@ -150,6 +200,13 @@ async def get_inspection(
     current_user: User = Depends(require_role("OFFICER", "ADMIN")),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Returns full inspection detail including:
+    - Status (PENDING | PROCESSING | COMPLIANT | NON_COMPLIANT | PROCESSING_FAILED)
+    - Uploaded images with preprocessing & OCR status
+    - Extracted LMPC fields (MRP, Net Quantity, Manufacturer, etc.)
+    - Per-rule findings (PASS | FAIL | INFO)
+    """
     result = await db.execute(
         select(Inspection)
         .where(Inspection.id == inspection_id)
@@ -163,119 +220,7 @@ async def get_inspection(
     )
     inspection = result.scalar_one_or_none()
     if not inspection:
-        raise HTTPException(status_code=404, detail="Inspection not found")
-
-    # Object-level authorization check
-    check_inspection_access(inspection, current_user)
-
-    return inspection
-
-
-@router.post("/{inspection_id}/submit", response_model=InspectionOut)
-async def submit_inspection(
-    inspection_id: uuid.UUID,
-    current_user: User = Depends(require_role("OFFICER", "ADMIN")),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Officer submits the inspection after uploading all images.
-    Race-condition guard: rejects if any image is still mid-pipeline.
-    """
-    result = await db.execute(
-        select(Inspection)
-        .where(Inspection.id == inspection_id)
-        .options(selectinload(Inspection.images), selectinload(Inspection.product_category))
-    )
-    inspection = result.scalar_one_or_none()
-    if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found.")
 
-    # Object-level authorization check
-    check_inspection_access(inspection, current_user)
-
-    if inspection.status != "PENDING":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Inspection is already '{inspection.status}', cannot submit.",
-        )
-    if not inspection.images:
-        raise HTTPException(status_code=400, detail="Upload at least one image before submitting.")
-
-    # Guard: reject if OCR / CV pipeline is still running
-    still_processing = [
-        img for img in inspection.images
-        if img.ocr_status in ("PENDING", "PROCESSING")
-        or img.preprocessing_status == "PROCESSING"
-    ]
-    if still_processing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{len(still_processing)} image(s) still processing. Retry in a moment.",
-        )
-
-    inspection.status = "SUBMITTED"
-    db.add(AuditLog(
-        user_id=current_user.id,
-        action="SUBMIT_INSPECTION",
-        entity_name="inspections",
-        entity_id=inspection_id,
-        payload={"previous_status": "PENDING", "image_count": len(inspection.images)},
-    ))
-    await db.commit()
-    await db.refresh(inspection, ["product_category"])
+    _check_access(inspection, current_user)
     return inspection
-
-
-@router.post("/{inspection_id}/review", response_model=ReviewOut)
-async def review_inspection(
-    inspection_id: uuid.UUID,
-    review_in: ReviewCreate,
-    current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Admin reviews a SUBMITTED inspection.
-    Valid actions: ACCEPT | REJECT | REQUEST_REINSPECTION
-    """
-    VALID_ACTIONS = {"ACCEPT", "REJECT", "REQUEST_REINSPECTION"}
-    if review_in.action not in VALID_ACTIONS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid action. Must be one of: {sorted(VALID_ACTIONS)}",
-        )
-
-    result = await db.execute(select(Inspection).where(Inspection.id == inspection_id))
-    inspection = result.scalar_one_or_none()
-    if not inspection:
-        raise HTTPException(status_code=404, detail="Inspection not found.")
-    if inspection.status != "SUBMITTED":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Can only review SUBMITTED inspections, current: '{inspection.status}'.",
-        )
-
-    status_map = {
-        "ACCEPT": "APPROVED",
-        "REJECT": "REJECTED",
-        "REQUEST_REINSPECTION": "PENDING",
-    }
-    previous = inspection.status
-    inspection.status = status_map[review_in.action]
-
-    review = Review(
-        inspection_id=inspection_id,
-        officer_id=current_user.id,
-        action=review_in.action,
-        comments=review_in.comments,
-    )
-    db.add(review)
-    db.add(AuditLog(
-        user_id=current_user.id,
-        action=f"REVIEW_{review_in.action}",
-        entity_name="inspections",
-        entity_id=inspection_id,
-        payload={"previous_status": previous, "new_status": inspection.status},
-    ))
-    await db.commit()
-    await db.refresh(review)
-    return review

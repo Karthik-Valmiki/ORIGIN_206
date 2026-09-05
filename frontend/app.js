@@ -87,10 +87,15 @@ function fmtDate(iso) {
 function statusBadge(status) {
   const s = (status || "").toUpperCase();
   const map = {
-    PENDING:   ["pending",   "Pending"],
-    SUBMITTED: ["submitted", "Submitted"],
-    APPROVED:  ["approved",  "Approved"],
-    REJECTED:  ["rejected",  "Rejected"],
+    PENDING:         ["pending",        "Pending"],
+    PROCESSING:      ["processing",     "Processing"],
+    COMPLIANT:       ["approved",       "✓ Compliant"],
+    NON_COMPLIANT:   ["rejected",       "✕ Non-Compliant"],
+    PROCESSING_FAILED: ["submitted",    "Processing Failed"],
+    // Finding-level statuses
+    PASS:   ["approved",  "PASS"],
+    FAIL:   ["rejected",  "FAIL"],
+    INFO:   ["submitted", "INFO"],
   };
   const [cls, label] = map[s] || ["pending", s];
   return `<span class="badge badge-${cls}"><span class="badge-dot"></span>${label}</span>`;
@@ -124,59 +129,60 @@ function greeting() {
 /* ═══════════════════════════════════════════════════════════════
    AUTH FLOW
 ═══════════════════════════════════════════════════════════════ */
-async function boot() {
-  // Check if system is initialized
-  let setupNeeded = false;
-  try {
-    const r = await fetch(API + "/setup/status");
-    const d = await r.json();
-    setupNeeded = !d.initialized;
-  } catch {
-    // API not reachable – show login anyway
-  }
+/* ── Tab switcher (Login ↔ Register) ───────────────────────── */
+function showAuthTab(tab) {
+  const isLogin = tab === "login";
+  document.getElementById("auth-login-panel").style.display    = isLogin ? "" : "none";
+  document.getElementById("auth-register-panel").style.display = isLogin ? "none" : "";
+  document.getElementById("tab-login").classList.toggle("active", isLogin);
+  document.getElementById("tab-register").classList.toggle("active", !isLogin);
+  // Clear any stale errors when switching tabs
+  hideError(isLogin ? "register-error" : "login-error");
+}
 
-  if (setupNeeded) {
-    show("setup-card");
-  } else if (STATE.token) {
-    // Try to use existing token
+async function boot() {
+  if (STATE.token) {
+    // Try to resume existing session
     try {
       STATE.user = await apiFetch("/auth/me");
       enterApp();
+      return;
     } catch {
       STATE.token = null;
       localStorage.removeItem("lmpc_token");
-      show("login-card");
     }
-  } else {
-    show("login-card");
   }
+  // Always land on the Login tab
+  showAuthTab("login");
 }
 
-function show(cardId) {
-  ["setup-card", "login-card"].forEach(id => {
-    document.getElementById(id).style.display = id === cardId ? "block" : "none";
-  });
-}
-
-/* ── Setup ──────────────────────────────────────────────────── */
-document.getElementById("setup-form").addEventListener("submit", async (e) => {
+/* ── Register (Officer self-registration) ───────────────────── */
+document.getElementById("register-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  hideError("setup-error");
-  setLoading("setup-btn", true);
+  hideError("register-error");
+
+  const fullName = document.getElementById("reg-name").value.trim();
+  const email    = document.getElementById("reg-email").value.trim();
+  const password = document.getElementById("reg-password").value;
+
+  if (password.length < 8) {
+    showError("register-error", "Password must be at least 8 characters.");
+    return;
+  }
+
+  setLoading("register-btn", true);
   try {
-    const body = {
-      full_name: document.getElementById("setup-name").value.trim(),
-      email:     document.getElementById("setup-email").value.trim(),
-      password:  document.getElementById("setup-password").value,
-    };
-    await apiFetch("/setup/", { method: "POST", body: JSON.stringify(body) });
-    showToast("System initialized! Please sign in.", "success");
-    show("login-card");
-    document.getElementById("login-email").value = body.email;
+    await apiFetch("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ full_name: fullName, email, password, role_name: "OFFICER" }),
+    });
+    showToast("Account created! Please sign in.", "success");
+    showAuthTab("login");
+    document.getElementById("login-email").value = email;
   } catch (err) {
-    showError("setup-error", err.message);
+    showError("register-error", err.message);
   } finally {
-    setLoading("setup-btn", false);
+    setLoading("register-btn", false);
   }
 });
 
@@ -221,6 +227,33 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
 document.getElementById("login-email")?.addEventListener("input", () => hideError("login-error"));
 document.getElementById("login-password")?.addEventListener("input", () => hideError("login-error"));
 
+/* ── Mobile Sidebar Drawer ─────────────────────────────────── */
+function toggleSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  if (!sidebar) return;
+  if (sidebar.classList.contains("open")) {
+    closeSidebar();
+  } else {
+    openSidebar();
+  }
+}
+
+function openSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  if (sidebar) sidebar.classList.add("open");
+  if (backdrop) backdrop.classList.add("visible");
+  document.body.style.overflow = "hidden"; // Prevent body scroll while drawer is open
+}
+
+function closeSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  if (sidebar) sidebar.classList.remove("open");
+  if (backdrop) backdrop.classList.remove("visible");
+  document.body.style.overflow = "";
+}
+
 /* ── Enter App ─────────────────────────────────────────────── */
 function enterApp() {
   document.getElementById("auth-overlay").style.display = "none";
@@ -228,31 +261,35 @@ function enterApp() {
 
   const u = STATE.user;
   const userRole = getUserRole(u);
+  const initials = moniker(u.full_name || u.email);
 
   document.getElementById("user-name-display").textContent  = u.full_name || u.email;
   document.getElementById("user-role-display").textContent  = userRole;
-  document.getElementById("user-avatar-initials").textContent = moniker(u.full_name || u.email);
+  document.getElementById("user-avatar-initials").textContent = initials;
+  const mobileAvatar = document.getElementById("mobile-avatar");
+  if (mobileAvatar) mobileAvatar.textContent = initials;
+
   document.getElementById("greeting-text").textContent = `${greeting()}, ${(u.full_name || "").split(" ")[0] || "Officer"}`;
 
-  // Show admin nav item if role is ADMIN
+  // Show/hide admin items on both desktop sidebar and mobile bottom nav
   if (userRole === "ADMIN") {
-    document.querySelectorAll(".nav-item-admin").forEach(el => el.classList.remove("hidden"));
+    document.querySelectorAll(".nav-item-admin, .bnav-admin").forEach(el => el.classList.remove("hidden"));
   } else {
-    document.querySelectorAll(".nav-item-admin").forEach(el => el.classList.add("hidden"));
+    document.querySelectorAll(".nav-item-admin, .bnav-admin").forEach(el => el.classList.add("hidden"));
   }
 
   navigate("dashboard");
 }
 
 function logout() {
+  closeSidebar();
   STATE.token = null;
   STATE.user = null;
   localStorage.removeItem("lmpc_token");
-  // Cleanly hide admin nav items
-  document.querySelectorAll(".nav-item-admin").forEach(el => el.classList.add("hidden"));
+  document.querySelectorAll(".nav-item-admin, .bnav-admin").forEach(el => el.classList.add("hidden"));
   document.getElementById("app").style.display = "none";
   document.getElementById("auth-overlay").style.display = "flex";
-  show("login-card");
+  showAuthTab("login");
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -260,11 +297,17 @@ function logout() {
 ═══════════════════════════════════════════════════════════════ */
 function navigate(view) {
   event?.preventDefault();
+  closeSidebar();
   STATE.currentView = view;
 
-  // Highlight nav item
+  // Highlight desktop nav item
   document.querySelectorAll(".nav-item").forEach(el => {
     el.classList.toggle("active", el.id === `nav-${view}`);
+  });
+
+  // Highlight mobile bottom nav item
+  document.querySelectorAll(".bnav-item").forEach(el => {
+    el.classList.toggle("active", el.id === `bnav-${view}`);
   });
 
   // Show/hide views
@@ -276,6 +319,7 @@ function navigate(view) {
   if (view === "dashboard")   loadDashboard();
   if (view === "inspections") loadInspections();
   if (view === "users")       loadUsers();
+  if (view === "rules")       loadRules();
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -286,13 +330,11 @@ async function loadDashboard() {
     const inspections = await apiFetch("/inspections/?limit=100");
     const list = Array.isArray(inspections) ? inspections : (inspections.items || []);
 
-    const counts = { PENDING: 0, SUBMITTED: 0, APPROVED: 0, REJECTED: 0 };
-    list.forEach(i => { const s = i.status?.toUpperCase(); if (counts[s] !== undefined) counts[s]++; });
-
-    document.getElementById("stat-pending").textContent   = counts.PENDING;
-    document.getElementById("stat-submitted").textContent = counts.SUBMITTED;
-    document.getElementById("stat-approved").textContent  = counts.APPROVED;
-    document.getElementById("stat-rejected").textContent  = counts.REJECTED;
+    const counts = _countsByStatus(list);
+    document.getElementById("stat-pending").textContent   = counts.PENDING + counts.PROCESSING;
+    document.getElementById("stat-submitted").textContent = counts.PROCESSING;
+    document.getElementById("stat-approved").textContent  = counts.COMPLIANT;
+    document.getElementById("stat-rejected").textContent  = counts.NON_COMPLIANT;
 
     const recent = list.slice(0, 7);
     const tbody = document.getElementById("recent-tbody");
@@ -300,6 +342,15 @@ async function loadDashboard() {
   } catch (err) {
     showToast("Could not load dashboard: " + err.message, "error");
   }
+}
+
+function _countsByStatus(list) {
+  const c = { PENDING: 0, PROCESSING: 0, COMPLIANT: 0, NON_COMPLIANT: 0 };
+  list.forEach(i => {
+    const s = (i.status || "").toUpperCase();
+    if (c[s] !== undefined) c[s]++;
+  });
+  return c;
 }
 
 function inspectionRow(i) {
@@ -377,8 +428,34 @@ async function createInspection() {
   }
 }
 
+/* ── Polling state ──────────────────────────────────────────── */
+let _pollTimer = null;
+
+function _startPolling(inspectionId) {
+  _stopPolling();
+  _pollTimer = setInterval(async () => {
+    try {
+      const fresh = await apiFetch(`/inspections/${inspectionId}`);
+      const s = (fresh.status || "").toUpperCase();
+      if (s === "COMPLIANT" || s === "NON_COMPLIANT" || s === "PROCESSING_FAILED") {
+        _stopPolling();
+        // Reload the detail panel with final results
+        openDetail(inspectionId);
+        // Also refresh the list / dashboard in background
+        if (STATE.currentView === "dashboard") loadDashboard();
+        else loadInspections();
+      }
+    } catch (_) { /* ignore transient errors */ }
+  }, 3000);
+}
+
+function _stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
 /* ── Inspection Detail ──────────────────────────────────────── */
 async function openDetail(id) {
+  _stopPolling();
   document.getElementById("detail-body").innerHTML = `<span class="spinner-inline"></span> Loading…`;
   document.getElementById("detail-footer").innerHTML = "";
   openModal("modal-inspection-detail");
@@ -387,10 +464,49 @@ async function openDetail(id) {
     document.getElementById("detail-title").textContent = i.inspection_number || "Inspection Details";
     document.getElementById("detail-sub").textContent   = i.product_category?.category_name || "";
 
-    const isReviewable = ["SUBMITTED"].includes((i.status || "").toUpperCase());
-    const isAdmin      = getUserRole(STATE.user) === "ADMIN";
+    const statusUpper = (i.status || "").toUpperCase();
+    const isProcessing    = statusUpper === "PROCESSING";
+    const isCompliant     = statusUpper === "COMPLIANT";
+    const isNonCompliant  = statusUpper === "NON_COMPLIANT";
+    const isPending       = statusUpper === "PENDING";
+    const hasImages       = Array.isArray(i.images) && i.images.length > 0;
+
+    // ── Verdict Banner ───────────────────────────────────────────────────
+    let verdictBanner = "";
+    if (isCompliant) {
+      verdictBanner = `
+        <div class="verdict-banner verdict-compliant">
+          <span class="verdict-icon">✓</span>
+          <div>
+            <div class="verdict-title">COMPLIANT</div>
+            <div class="verdict-sub">All mandatory LMPC fields detected on this product label.</div>
+          </div>
+        </div>`;
+    } else if (isNonCompliant) {
+      const failedChecks = (i.findings || []).filter(f => f.status === "FAIL").map(f => f.details?.check || f.finding_type);
+      verdictBanner = `
+        <div class="verdict-banner verdict-noncompliant">
+          <span class="verdict-icon">✕</span>
+          <div>
+            <div class="verdict-title">NON-COMPLIANT</div>
+            <div class="verdict-sub">Missing mandatory fields: ${failedChecks.join(", ") || "see findings below"}</div>
+          </div>
+        </div>`;
+    } else if (isProcessing) {
+      verdictBanner = `
+        <div class="verdict-banner verdict-processing">
+          <span class="spinner-inline"></span>
+          <div>
+            <div class="verdict-title">Verification in Progress</div>
+            <div class="verdict-sub">OCR pipeline running — results will appear automatically.</div>
+          </div>
+        </div>`;
+      _startPolling(id); // auto-refresh until done
+    }
 
     document.getElementById("detail-body").innerHTML = `
+      ${verdictBanner}
+
       <div class="detail-grid">
         <div class="detail-section">
           <div class="detail-label">Status</div>
@@ -411,84 +527,117 @@ async function openDetail(id) {
       </div>
       <hr class="detail-divider" />
 
-      ${sectionTable("Images", ["File", "Pre-Processing", "OCR", "Blur", "Glare"], (i.images || []).map(img => `
-        <tr>
-          <td class="mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${img.file_path || "—"}</td>
-          <td>${img.preprocessing_status || "—"}</td>
-          <td>${img.ocr_status || "—"}</td>
-          <td>${img.blur_score != null ? img.blur_score.toFixed(2) : "—"}</td>
-          <td>${img.glare_score != null ? img.glare_score.toFixed(2) : "—"}</td>
-        </tr>`).join("") || `<tr><td colspan="5" class="empty-cell">No images uploaded</td></tr>`, (i.status || "").toUpperCase() === "PENDING" ? `<div style="margin-top:10px;display:flex;align-items:center;gap:10px;">
-          <input type="file" id="upload-image-file-${i.id}" accept="image/*" style="display:none;" onchange="handleImageUpload('${i.id}')" />
-          <button class="btn btn-ghost" style="padding:6px 14px;font-size:.825rem;" onclick="document.getElementById('upload-image-file-${i.id}').click()">
-            📷 Select & Upload Image
+      ${sectionTable("Uploaded Images", ["File", "Pre-Processing", "OCR", "Blur Score", "Glare Score"],
+        (i.images || []).map(img => `
+          <tr>
+            <td class="mono" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${img.file_path?.split(/[\/\\]/).pop() || "—"}</td>
+            <td>${img.preprocessing_status || "—"}</td>
+            <td>${img.ocr_status || "—"}</td>
+            <td>${img.blur_score != null ? img.blur_score.toFixed(2) : "—"}</td>
+            <td>${img.glare_score != null ? img.glare_score.toFixed(2) : "—"}</td>
+          </tr>`).join("") || `<tr><td colspan="5" class="empty-cell">No images uploaded yet</td></tr>`,
+        isPending ? `<div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <input type="file" id="upload-image-file-${i.id}" accept="image/*" multiple style="display:none;" onchange="handleImageUpload('${i.id}')" />
+          <button class="btn btn-primary" style="padding:8px 16px;font-size:.85rem;display:inline-flex;align-items:center;gap:8px;" onclick="document.getElementById('upload-image-file-${i.id}').click()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            Take Photo / Upload Images
           </button>
           <span id="upload-status-${i.id}" style="font-size:.8rem;color:var(--c-text-2);"></span>
         </div>` : "")}
 
-      ${sectionTable("Extracted Fields", ["Field Type", "Raw Value", "Normalized", "Unit", "Validated"], (i.extracted_fields || []).map(f => `
-        <tr>
-          <td>${f.field_type || "—"}</td>
-          <td>${f.raw_value || "—"}</td>
-          <td>${f.normalized_value || "—"}</td>
-          <td>${f.unit || "—"}</td>
-          <td>${f.is_validated ? "✓" : "✗"}</td>
-        </tr>`).join("") || `<tr><td colspan="5" class="empty-cell">No extracted fields</td></tr>`)}
+      ${(i.extracted_fields || []).length > 0 ? sectionTable(
+        "Extracted LMPC Fields",
+        ["Field", "Extracted Value", "Normalized", "Unit", "Validated"],
+        i.extracted_fields.map(f => `
+          <tr>
+            <td><strong>${f.field_type || "—"}</strong></td>
+            <td>${f.raw_value || "—"}</td>
+            <td>${f.normalized_value || "—"}</td>
+            <td>${f.unit || "—"}</td>
+            <td style="color:${f.is_validated ? 'var(--c-green)' : 'var(--c-red)'}">${f.is_validated ? "✓ Yes" : "✗ No"}</td>
+          </tr>`).join("")) : ""}
 
-      ${sectionTable("Findings", ["Finding Type", "Status", "Details"], (i.findings || []).map(f => `
-        <tr>
-          <td>${f.finding_type || "—"}</td>
-          <td>${statusBadge(f.status)}</td>
-          <td style="font-size:.8rem;word-break:break-word;max-width:320px;">${f.details ? (f.details.message || JSON.stringify(f.details)) : "—"}</td>
-        </tr>`).join("") || `<tr><td colspan="3" class="empty-cell">No findings</td></tr>`)}
-
-      ${sectionTable("Review History", ["Action", "Comments", "Reviewed At"], (i.reviews || []).map(r => `
-        <tr>
-          <td>${r.action || "—"}</td>
-          <td>${r.comments || "—"}</td>
-          <td>${fmtDate(r.reviewed_at)}</td>
-        </tr>`).join("") || `<tr><td colspan="3" class="empty-cell">No reviews yet</td></tr>`)}
+      ${(i.findings || []).length > 0 ? sectionTable(
+        "Rule Check Findings",
+        ["LMPC Rule", "Check", "Result", "Details"],
+        i.findings.map(f => `
+          <tr>
+            <td style="font-size:.78rem;color:var(--c-text-2);">${f.details?.rule || "—"}</td>
+            <td>${f.details?.check || f.finding_type || "—"}</td>
+            <td>${statusBadge(f.status)}</td>
+            <td style="font-size:.8rem;word-break:break-word;max-width:280px;">${f.details?.message || "—"}</td>
+          </tr>`).join("")) : 
+        (isCompliant || isNonCompliant ? "<p style='color:var(--c-text-3);font-size:.85rem;'>No findings recorded.</p>" : "")}
     `;
 
-    // Footer actions
-    let footerButtons = `<button class="btn btn-ghost" onclick="closeModal('modal-inspection-detail')">Close</button>`;
-    if (isAdmin && isReviewable) {
-      STATE.reviewTargetId = id;
-      footerButtons += `<button class="btn btn-primary" onclick="openReviewModal('${id}')">Review Inspection</button>`;
+    // ── Footer ──────────────────────────────────────────────────────────
+    let footer = `<button class="btn btn-ghost" onclick="closeModal('modal-inspection-detail');_stopPolling();">Close</button>`;
+
+    if (isCompliant) {
+      footer = `<span style="font-size:.85rem;color:var(--c-green);font-weight:600;display:flex;align-items:center;gap:6px;margin-right:auto;">✓ Verified COMPLIANT with LMPC Rules, 2011</span>` + footer;
+    } else if (isNonCompliant) {
+      footer = `<span style="font-size:.85rem;color:var(--c-red);font-weight:600;display:flex;align-items:center;gap:6px;margin-right:auto;">✕ NON-COMPLIANT — label does not satisfy all LMPC requirements</span>` + footer;
+    } else if (isProcessing) {
+      footer = `<span style="font-size:.85rem;color:var(--c-primary);display:flex;align-items:center;gap:6px;margin-right:auto;"><span class="spinner-inline"></span> Verifying against LMPC rules…</span>` + footer;
     }
-    document.getElementById("detail-footer").innerHTML = footerButtons;
+
+    document.getElementById("detail-footer").innerHTML = footer;
   } catch (err) {
     document.getElementById("detail-body").innerHTML = `<div class="form-error">${err.message}</div>`;
   }
 }
 
+
 async function handleImageUpload(inspectionId) {
   const input = document.getElementById(`upload-image-file-${inspectionId}`);
   const statusEl = document.getElementById(`upload-status-${inspectionId}`);
-  if (!input || !input.files || !input.files[0]) return;
+  if (!input || !input.files || !input.files.length) return;
 
-  const file = input.files[0];
-  statusEl.innerHTML = `<span class="spinner-inline"></span> Uploading ${file.name}…`;
+  const files = Array.from(input.files);
+  const total = files.length;
+  let successCount = 0;
+  const errors = [];
 
-  try {
-    const formData = new FormData();
-    formData.append("file", file);
+  for (let idx = 0; idx < files.length; idx++) {
+    const file = files[idx];
+    statusEl.innerHTML = `<span class="spinner-inline"></span> Uploading ${idx + 1}/${total}: ${file.name}…`;
 
-    const res = await fetch(`${API}/inspections/${inspectionId}/images`, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${STATE.token}` },
-      body: formData,
-    });
-    const data = await res.json();
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
 
-    if (!res.ok) throw new Error(data.detail || "Upload failed");
+      const res = await fetch(`${API}/inspections/${inspectionId}/images`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${STATE.token}` },
+        body: formData,
+      });
+      const data = await res.json();
 
-    showToast("Image uploaded successfully! OCR pipeline started.", "success");
-    openDetail(inspectionId); // Refresh modal
-  } catch (err) {
-    statusEl.textContent = `Upload error: ${err.message}`;
-    showToast(`Upload failed: ${err.message}`, "error");
+      if (!res.ok) throw new Error(data.detail || "Upload failed");
+      successCount++;
+    } catch (err) {
+      errors.push(`${file.name}: ${err.message}`);
+    }
   }
+
+  // Reset input so the same files can be re-selected if needed
+  input.value = "";
+
+  if (errors.length === 0) {
+    showToast(
+      total === 1
+        ? "Image uploaded! OCR pipeline started."
+        : `All ${total} images uploaded! OCR pipeline started.`,
+      "success"
+    );
+    statusEl.textContent = "";
+  } else {
+    const msg = `${successCount}/${total} uploaded. Errors: ${errors.join(" | ")}`;
+    statusEl.textContent = msg;
+    showToast(msg, "error");
+  }
+
+  openDetail(inspectionId); // Refresh modal to show newly uploaded images
 }
 
 function sectionTable(title, headers, rowsHtml, extraHtml = "") {
@@ -505,37 +654,6 @@ function sectionTable(title, headers, rowsHtml, extraHtml = "") {
     </div>`;
 }
 
-/* ── Review ─────────────────────────────────────────────────── */
-function openReviewModal(id) {
-  STATE.reviewTargetId = id;
-  closeModal("modal-inspection-detail");
-  document.getElementById("review-comments").value = "";
-  document.querySelector('input[name="review-action"][value="ACCEPT"]').checked = true;
-  hideError("review-error");
-  openModal("modal-review");
-}
-
-async function submitReview() {
-  hideError("review-error");
-  const action   = document.querySelector('input[name="review-action"]:checked')?.value;
-  const comments = document.getElementById("review-comments").value.trim();
-  if (!action) { showError("review-error", "Please select an action."); return; }
-  setLoading("submit-review-btn", true);
-  try {
-    await apiFetch(`/inspections/${STATE.reviewTargetId}/review`, {
-      method: "POST",
-      body: JSON.stringify({ action, comments: comments || null }),
-    });
-    showToast("Review submitted successfully.", "success");
-    closeModal("modal-review");
-    if (STATE.currentView === "dashboard") loadDashboard();
-    else loadInspections();
-  } catch (err) {
-    showError("review-error", err.message);
-  } finally {
-    setLoading("submit-review-btn", false);
-  }
-}
 
 /* ═══════════════════════════════════════════════════════════════
    USERS
@@ -572,10 +690,13 @@ async function loadUsers() {
 }
 
 async function toggleUser(userId, currentlyActive) {
-  const action = currentlyActive ? "deactivate" : "reactivate";
+  const action = currentlyActive ? "deactivate" : "activate";
+  const verb   = currentlyActive ? "deactivate" : "reactivate";
+  if (!confirm(`Are you sure you want to ${verb} this user account?`)) return;
+
   try {
     await apiFetch(`/admin/users/${userId}/${action}`, { method: "PATCH" });
-    showToast(`User ${action}d successfully.`, "success");
+    showToast(`User ${verb}d successfully.`, "success");
     loadUsers();
   } catch (err) {
     showToast(err.message, "error");
@@ -641,6 +762,232 @@ document.addEventListener("keydown", e => {
     document.querySelectorAll(".modal-backdrop").forEach(m => { m.style.display = "none"; });
   }
 });
+
+/* ═══════════════════════════════════════════════════════════════
+   LMPC RULES MANAGEMENT (ADMIN ONLY)
+═══════════════════════════════════════════════════════════════ */
+STATE.activeRuleVersion = null;
+
+async function loadRules() {
+  const tbody = document.getElementById("rules-tbody");
+  tbody.innerHTML = `<tr><td colspan="6" class="empty-cell"><span class="spinner-inline"></span> Loading rules…</td></tr>`;
+  try {
+    const version = await apiFetch("/admin/rules");
+    STATE.activeRuleVersion = version;
+
+    // Populate version banner
+    document.getElementById("rule-version-title").textContent = `Version ${version.version_number || "1.0"}`;
+    document.getElementById("rule-version-sub").textContent = `Effective from: ${fmtDate(version.effective_from)}`;
+    document.getElementById("rule-version-badge").textContent = version.is_active ? "Active Version" : "Inactive";
+    document.getElementById("rule-version-badge").className = `badge ${version.is_active ? "badge-active" : "badge-inactive"}`;
+
+    const rules = Array.isArray(version.rules) ? version.rules : [];
+    const total = rules.length;
+    const mandatoryCount = rules.filter(r => r.parameters?.is_mandatory === true).length;
+    const advisoryCount = total - mandatoryCount;
+
+    document.getElementById("rules-total-count").textContent = total;
+    document.getElementById("rules-mandatory-count").textContent = mandatoryCount;
+    document.getElementById("rules-advisory-count").textContent = advisoryCount;
+
+    if (!rules.length) {
+      tbody.innerHTML = emptyRow(6, "No rules configured in this version");
+      return;
+    }
+
+    tbody.innerHTML = rules.map(r => {
+      const isMandatory = r.parameters?.is_mandatory === true;
+      const field = r.parameters?.field || "—";
+      const ruleRef = r.parameters?.rule_ref || "";
+
+      return `<tr>
+        <td>
+          <div style="font-weight:600;color:var(--c-text);">${r.rule_code}</div>
+          ${ruleRef ? `<span style="font-size:.78rem;color:var(--c-text-2);">${ruleRef}</span>` : ""}
+        </td>
+        <td style="max-width:300px;font-size:.85rem;color:var(--c-text-2);line-height:1.4;">
+          ${r.description || "—"}
+        </td>
+        <td><span class="mono" style="font-weight:600;font-size:.8rem;">${field}</span></td>
+        <td><span class="badge badge-pending">${r.check_type}</span></td>
+        <td>
+          <span class="badge ${isMandatory ? 'badge-mandatory' : 'badge-advisory'}">
+            <span class="badge-dot"></span>${isMandatory ? "Mandatory" : "Advisory"}
+          </span>
+        </td>
+        <td>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button class="btn btn-ghost" style="padding:4px 10px;font-size:.78rem;" 
+                    onclick="toggleRuleMandatory('${r.id}', ${isMandatory})" 
+                    title="${isMandatory ? 'Make advisory' : 'Make mandatory'}">
+              ${isMandatory ? "Demote" : "Promote"}
+            </button>
+            <button class="btn btn-ghost" style="padding:4px 10px;font-size:.78rem;" 
+                    onclick="openEditRuleModal('${r.id}')">
+              Edit
+            </button>
+            <button class="btn btn-ghost" style="padding:4px 10px;font-size:.78rem;color:var(--c-red);" 
+                    onclick="deleteRule('${r.id}', '${r.rule_code}')">
+              &times;
+            </button>
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+
+  } catch (err) {
+    tbody.innerHTML = emptyRow(6, `Error: ${err.message}`);
+    showToast("Could not load LMPC rules: " + err.message, "error");
+  }
+}
+
+function openNewRuleModal() {
+  document.getElementById("rule-modal-title").textContent = "Add LMPC Rule";
+  document.getElementById("edit-rule-id").value = "";
+  document.getElementById("rule-code").value = "";
+  document.getElementById("rule-code").disabled = false;
+  document.getElementById("rule-ref").value = "";
+  document.getElementById("rule-description").value = "";
+  document.getElementById("rule-field").value = "MRP";
+  document.getElementById("rule-check-type").value = "DECLARATION";
+  document.getElementById("rule-is-mandatory").checked = true;
+  hideError("rule-error");
+  openModal("modal-rule");
+}
+
+function openEditRuleModal(ruleId) {
+  const version = STATE.activeRuleVersion;
+  if (!version) return;
+  const r = (version.rules || []).find(x => x.id === ruleId);
+  if (!r) return;
+
+  document.getElementById("rule-modal-title").textContent = `Edit Rule: ${r.rule_code}`;
+  document.getElementById("edit-rule-id").value = r.id;
+  document.getElementById("rule-code").value = r.rule_code;
+  document.getElementById("rule-code").disabled = true; // code is primary identifier
+  document.getElementById("rule-ref").value = r.parameters?.rule_ref || "";
+  document.getElementById("rule-description").value = r.description || "";
+  document.getElementById("rule-field").value = r.parameters?.field || "MRP";
+  document.getElementById("rule-check-type").value = r.check_type || "DECLARATION";
+  document.getElementById("rule-is-mandatory").checked = r.parameters?.is_mandatory === true;
+  hideError("rule-error");
+  openModal("modal-rule");
+}
+
+async function saveRule() {
+  hideError("rule-error");
+  const editId = document.getElementById("edit-rule-id").value;
+  const ruleCode = document.getElementById("rule-code").value.trim();
+  const ruleRef = document.getElementById("rule-ref").value.trim();
+  const description = document.getElementById("rule-description").value.trim();
+  const field = document.getElementById("rule-field").value;
+  const checkType = document.getElementById("rule-check-type").value;
+  const isMandatory = document.getElementById("rule-is-mandatory").checked;
+
+  if (!ruleCode) {
+    showError("rule-error", "Rule code is required.");
+    return;
+  }
+
+  setLoading("save-rule-btn", true);
+  try {
+    if (editId) {
+      // Update existing rule
+      await apiFetch(`/admin/rules/${editId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          check_type: checkType,
+          description,
+          is_mandatory: isMandatory,
+          field,
+          rule_ref: ruleRef,
+        }),
+      });
+      showToast("Rule updated successfully.", "success");
+    } else {
+      // Create new rule
+      await apiFetch("/admin/rules", {
+        method: "POST",
+        body: JSON.stringify({
+          rule_code: ruleCode,
+          check_type: checkType,
+          description,
+          is_mandatory: isMandatory,
+          field,
+          rule_ref: ruleRef,
+        }),
+      });
+      showToast("New LMPC rule added successfully.", "success");
+    }
+    closeModal("modal-rule");
+    loadRules();
+  } catch (err) {
+    showError("rule-error", err.message);
+  } finally {
+    setLoading("save-rule-btn", false);
+  }
+}
+
+async function toggleRuleMandatory(ruleId, currentlyMandatory) {
+  try {
+    await apiFetch(`/admin/rules/${ruleId}`, {
+      method: "PUT",
+      body: JSON.stringify({ is_mandatory: !currentlyMandatory }),
+    });
+    showToast(`Rule updated to ${!currentlyMandatory ? "Mandatory" : "Advisory"}.`, "success");
+    loadRules();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function deleteRule(ruleId, code) {
+  if (!confirm(`Are you sure you want to delete rule "${code}" from this active version?`)) return;
+  try {
+    await apiFetch(`/admin/rules/${ruleId}`, { method: "DELETE" });
+    showToast(`Rule ${code} deleted.`, "success");
+    loadRules();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+/* ── Rule Version ───────────────────────────────────────────── */
+function openNewVersionModal() {
+  document.getElementById("ver-number").value = "";
+  document.getElementById("ver-clone-rules").checked = true;
+  hideError("ver-error");
+  openModal("modal-rule-version");
+}
+
+async function createRuleVersion() {
+  hideError("ver-error");
+  const versionNumber = document.getElementById("ver-number").value.trim();
+  const cloneFromActive = document.getElementById("ver-clone-rules").checked;
+
+  if (!versionNumber) {
+    showError("ver-error", "Version number is required.");
+    return;
+  }
+
+  setLoading("create-ver-btn", true);
+  try {
+    await apiFetch("/admin/rules/version", {
+      method: "POST",
+      body: JSON.stringify({
+        version_number: versionNumber,
+        clone_from_active: cloneFromActive,
+      }),
+    });
+    showToast(`LMPC Rule Version ${versionNumber} published & activated!`, "success");
+    closeModal("modal-rule-version");
+    loadRules();
+  } catch (err) {
+    showError("ver-error", err.message);
+  } finally {
+    setLoading("create-ver-btn", false);
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════
    BOOT

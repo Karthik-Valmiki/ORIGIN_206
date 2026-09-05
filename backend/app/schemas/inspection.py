@@ -93,3 +93,50 @@ class ImageUploadResponse(BaseModel):
     image_id: uuid.UUID
     status: str
     message: str
+
+
+# ── Rules Management ──────────────────────────────────────────────────────────
+
+class RuleOut(BaseModel):
+    id: uuid.UUID
+    rule_version_id: uuid.UUID
+    rule_code: str
+    check_type: str
+    description: str | None
+    parameters: dict[str, Any] | None
+
+    model_config = {"from_attributes": True}
+
+
+class RuleCreate(BaseModel):
+    rule_code: str
+    check_type: str  # PRESENCE, VALUE, FORMAT, UNIT, PLACEMENT, LEGIBILITY, VISUAL, DECLARATION
+    description: str | None = None
+    is_mandatory: bool = True
+    field: str | None = None
+    rule_ref: str | None = None
+
+
+class RuleUpdate(BaseModel):
+    check_type: str | None = None
+    description: str | None = None
+    is_mandatory: bool | None = None
+    field: str | None = None
+    rule_ref: str | None = None
+
+
+class RuleVersionOut(BaseModel):
+    id: uuid.UUID
+    rule_set_id: uuid.UUID
+    version_number: str
+    is_active: bool
+    effective_from: datetime
+    rules: list[RuleOut] = []
+
+    model_config = {"from_attributes": True}
+
+
+class RuleVersionCreate(BaseModel):
+    version_number: str
+    clone_from_active: bool = True
+
