@@ -1,0 +1,91 @@
+.page {
+  min-height: 60dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+.card {
+  max-width: 400px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.inspectionId {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.heading {
+  font-size: var(--text-xl);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text-primary);
+}
+
+.pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-base);
+}
+
+.stepDot {
+  width: 22px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: var(--text-base);
+}
+
+.done .stepDot  { color: var(--color-compliant); }
+.active .stepDot { color: var(--color-accent); animation: pulse 1.2s ease-in-out infinite; }
+.pending .stepDot { color: var(--color-text-tertiary); }
+
+.done .stepLabel   { color: var(--color-text-primary); }
+.active .stepLabel { color: var(--color-text-primary); font-weight: var(--fw-medium); }
+.pending .stepLabel { color: var(--color-text-tertiary); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.hint {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+}
+
+/* Failed state */
+.failedBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.failedTitle {
+  font-size: var(--text-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--color-violation);
+}
+
+.failedDesc {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.retryLink {
+  font-size: var(--text-sm);
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-align: left;
+}

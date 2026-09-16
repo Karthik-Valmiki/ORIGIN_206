@@ -1,0 +1,32 @@
+# Dependencies & Build
+node_modules/
+dist/
+build/
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Environment & Credentials
+.env
+.env.local
+*.txt
+admin_user.txt
+
+# Media & Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+uploads/*
+
+# Ignore all markdown documentation files as requested
+*.md
+**/*.md
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.agents/

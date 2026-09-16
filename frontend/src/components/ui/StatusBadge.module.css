@@ -1,0 +1,58 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-weight: var(--fw-medium);
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sizes */
+.sm {
+  font-size: var(--text-xs);
+  padding: 2px var(--space-2);
+}
+.md {
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+}
+.lg {
+  font-size: var(--text-base);
+  padding: var(--space-2) var(--space-4);
+}
+
+.icon { font-style: normal; }
+
+/* Semantic variants */
+.compliant {
+  background-color: var(--color-compliant-bg);
+  color: var(--color-compliant);
+  border-color: var(--color-compliant-border);
+}
+.violation {
+  background-color: var(--color-violation-bg);
+  color: var(--color-violation);
+  border-color: var(--color-violation-border);
+}
+.review {
+  background-color: var(--color-review-bg);
+  color: var(--color-review);
+  border-color: var(--color-review-border);
+}
+.failed {
+  background-color: var(--color-failed-bg);
+  color: var(--color-failed);
+  border-color: var(--color-failed-border);
+}
+.info {
+  background-color: var(--color-info-bg);
+  color: var(--color-info);
+  border-color: var(--color-info-border);
+}
+.neutral {
+  background-color: var(--color-neutral-bg);
+  color: var(--color-neutral);
+  border-color: var(--color-neutral-border);
+}

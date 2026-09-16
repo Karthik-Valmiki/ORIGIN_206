@@ -1,0 +1,37 @@
+.page { max-width: 800px; margin: 0 auto; padding: var(--space-6) var(--space-5); display: flex; flex-direction: column; gap: var(--space-5); }
+.back { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); color: var(--color-text-secondary); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); transition: background-color var(--transition-fast); align-self: flex-start; }
+.back:hover { background-color: var(--color-surface); }
+.header { display: flex; flex-direction: column; gap: var(--space-2); }
+.title { font-size: var(--text-2xl); font-weight: var(--fw-bold); color: var(--color-text-primary); }
+.immutableNote { font-size: var(--text-sm); color: var(--color-text-secondary); background: var(--color-neutral-bg); border: 1px solid var(--color-neutral-border); border-radius: var(--radius-sm); padding: var(--space-3) var(--space-4); }
+
+.form { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.editorField { display: flex; flex-direction: column; gap: var(--space-1); }
+.editorLabel { font-size: var(--text-sm); font-weight: var(--fw-medium); color: var(--color-text-secondary); }
+
+.jsonEditor {
+  width: 100%;
+  font-family: 'Menlo', 'Monaco', 'Cascadia Code', monospace;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  resize: vertical;
+  tab-size: 2;
+  transition: border-color var(--transition-fast);
+}
+.jsonEditor:focus { outline: none; border-color: var(--color-accent); }
+.jsonEditor:disabled { opacity: 0.6; cursor: not-allowed; }
+.hasError { border-color: var(--color-violation); }
+.jsonError { font-size: var(--text-sm); color: var(--color-violation); }
+
+.validationResult { font-size: var(--text-sm); padding: var(--space-3) var(--space-4); border-radius: var(--radius-sm); border: 1px solid transparent; }
+.valid { background: var(--color-compliant-bg); color: var(--color-compliant); border-color: var(--color-compliant-border); }
+.invalid { background: var(--color-violation-bg); color: var(--color-violation); border-color: var(--color-violation-border); }
+.invalid ul { margin-top: var(--space-2); padding-left: var(--space-4); display: flex; flex-direction: column; gap: 4px; }
+
+.actions { display: flex; gap: var(--space-3); flex-wrap: wrap; }
